@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mav_joy</name>
+  <version>0.1.0</version>
+  <description>Mavlink MANUAL CONTROL bridge to /joy topic</description>
+  <maintainer email="goldartt@gmail.com">Arthur Golubtsov</maintainer>
+  <license>MIT</license>
+
+  <depend>rclrs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+
+  <export>
+    <build_type>ament_cargo</build_type>
+  </export>
+</package>
