@@ -6,14 +6,14 @@ The package with ROS 2 (Humble / Jazzy) node that turns the [mavlink-joystick](h
 flowchart LR
     subgraph phone["Phone — mavlink-joystick"]
         direction TB
-        app["MAVLink GCS<br/>listens on UDP :14550<br/>auto-detect: sys 1 / comp 1"]
+        app["MAVLink GCS<br/><br/>listens on UDP :14550<br/><br/>auto-detect: sys 1 / comp 1"]
     end
 
     subgraph host["Robot / PC — ROS 2 Humble or Jazzy"]
         direction TB
-        node["mav_joy_node<br/>UDP :14550"]
-        joy["/joy<br/>sensor_msgs/msg/Joy<br/>50 Hz"]
-        consumer["consumer node<br/>teleop, twist_mux, ..."]
+        node["mav_joy_node<br/><br/>UDP :14550"]
+        joy["/joy<br/><br/>sensor_msgs/msg/Joy<br/><br/>50 Hz"]
+        consumer["consumer node<br/><br/>teleop, twist_mux, ..."]
         node --> joy --> consumer
     end
 
