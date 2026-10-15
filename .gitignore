@@ -1,1 +1,7 @@
-/target
+target/
+
+build/
+install/
+log/
+
+.cargo/

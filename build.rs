@@ -10,7 +10,7 @@
 //! Missing libraries from that vendored set are replaced by empty shared
 //! objects that are added to the linker search path. The linker only has to
 //! find the file; `--as-needed` drops it again because no symbol is taken from
-//! it. If the real library is installed (`apt install ros-jazzy-test-msgs`),
+//! it. If the real library is installed (`apt install ros-<distro>-test-msgs`),
 //! no stub is generated and the real one is used.
 
 use std::env;
@@ -63,7 +63,7 @@ fn main() {
     if !stubs.is_empty() {
         println!(
             "cargo:warning=rclrs 0.7 wants {} message libraries that are not installed; \
-             linking empty stubs instead (install ros-jazzy-test-msgs to remove this warning)",
+             linking empty stubs instead (install ros-<distro>-test-msgs to remove this warning)",
             stubs.len()
         );
         println!("cargo:rustc-link-search=native={}", stub_dir.display());

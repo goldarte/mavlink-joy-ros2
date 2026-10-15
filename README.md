@@ -1,39 +1,73 @@
-# mav_joy — mavlink-joystick → `/joy`
+# mav_joy
 
-ROS 2 (Jazzy) node that turns the [mavlink-joystick] app into a ROS joystick: it
-answers the app's MAVLink discovery with `HEARTBEAT` and republishes every
-`MANUAL_CONTROL` (message 69) it receives as `sensor_msgs::msg::Joy` on `/joy`.
+The package with ROS 2 (Humble / Jazzy) node that turns the [mavlink-joystick](https://github.com/goldarte/mavlink-joystick) app into a ROS2 joystick:
 
+```mermaid
+flowchart LR
+    subgraph phone["Phone — mavlink-joystick"]
+        direction TB
+        app["MAVLink GCS<br/>listens on UDP :14550<br/>auto-detect: sys 1 / comp 1"]
+    end
+
+    subgraph host["Robot / PC — ROS 2 Humble or Jazzy"]
+        direction TB
+        node["mav_joy_node<br/>UDP :14550"]
+        joy["/joy<br/>sensor_msgs/msg/Joy<br/>50 Hz"]
+        consumer["consumer node<br/>teleop, twist_mux, ..."]
+        node --> joy --> consumer
+    end
+
+    node -- "HEARTBEAT — 1 Hz" --> app
+    app -- "MANUAL_CONTROL — 50 Hz" --> node
 ```
-  phone (mavlink-joystick app)                    robot / PC
-  ┌───────────────────────────┐                 ┌──────────────────────────┐
-  │ listens on UDP 14550      │◀── HEARTBEAT ───│ mav_joy_node             │
-  │ (auto-detect, sys 1 cmp 1)│   1 Hz, sys 1   │ UDP 14550                │
-  │                           │                 │                          │
-  │ MANUAL_CONTROL, 50 Hz     │─── UDP ────────▶│ ──▶ /joy (Joy) 50 Hz     │
-  └───────────────────────────┘                 └──────────────────────────┘
+
+## Install required packages
+
+First of all - you need ROS2 Humble/Jazzy to be installed.
+
+Then you need to install some packages:
+
+```bash
+export ROS_DISTRO=humble                       # or jazzy
+source /opt/ros/$ROS_DISTRO/setup.bash
+
+# Rust message generator and the message packages
+sudo apt install ros-$ROS_DISTRO-rosidl-generator-rs \
+                 ros-$ROS_DISTRO-std-msgs ros-$ROS_DISTRO-sensor-msgs \
+                 ros-$ROS_DISTRO-geometry-msgs ros-$ROS_DISTRO-builtin-interfaces \
+                 ros-$ROS_DISTRO-test-msgs build-essential \
+                 python3-colcon-common-extensions
+
+# Rust toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+echo '[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"' >> ~/.bashrc
+
+# colcon-ros-cargo
+sudo apt install python3-pip
+python3 -m pip install --user colcon-ros-cargo
 ```
 
-The app is a MAVLink GCS: it starts streaming `MANUAL_CONTROL` only after it has
-seen a `HEARTBEAT` from a vehicle whose system/component id match its settings
-(1/1, auto-detect on by default). This node provides exactly that heartbeat, so
-no setup is needed on the app side beyond being on the same network.
+Then you need to clone repo and populate ros-\<distro\>-* rust packages through a user-local ament prefix:
+
+```bash
+git clone https://github.com/goldarte/mavlink-joy-ros2.git
+cd mavlink-joy-ros2
+./scripts/register-ros-rust-index.sh   # once, or after installing/switching a distro
+
+# If you plan to build package right after installation:
+source .bashrc
+```
 
 ## Build
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-export PATH="$HOME/.cargo/bin:$PATH"           # colcon-ros-cargo needs cargo
-cd ~/projects/ros2_ws
-colcon build --packages-select mav_joy
-source install/setup.bash
+colcon build
 ```
 
-Rust-only iteration (no colcon) works as well:
+After that you will be able to build the package directly with cargo too:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-cd src/mavlink-joy-ros2 && cargo test && cargo build
+cargo test && cargo build
 ```
 
 ## Run
