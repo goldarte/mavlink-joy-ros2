@@ -17,8 +17,8 @@ flowchart LR
         node --> joy --> consumer
     end
 
-    node -- "HEARTBEAT — 1 Hz" --> app
     app -- "MANUAL_CONTROL — 50 Hz" --> node
+    node -- "HEARTBEAT — 1 Hz" --> app
 ```
 
 ## Install required packages
