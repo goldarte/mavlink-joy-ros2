@@ -41,6 +41,12 @@ const SOCKET_POLL: Duration = Duration::from_millis(200);
 /// Value of an axis that the sender marked as invalid (MAVLink uses INT16_MAX).
 const AXIS_INVALID: i16 = i16::MAX;
 
+/// Silence from the app that is reported as a warning first.
+const APP_SILENCE_WARNING: Duration = Duration::from_secs(10);
+
+/// Interval of the repeated warning while the app keeps being silent.
+const APP_SILENCE_WARNING_REPEAT: Duration = Duration::from_secs(60);
+
 /// Newest `MANUAL_CONTROL` values received from the app.
 ///
 /// The values are the MAVLink payload normalized to `-1.0..=1.0`; no stick
@@ -131,6 +137,10 @@ struct Shared {
     peer: Mutex<Option<SocketAddr>>,
     /// Source of the datagram that completed the message that was parsed last.
     last_source: Mutex<Option<SocketAddr>>,
+    /// When a message from another MAVLink system was received last.
+    last_peer_seen: Mutex<Option<Instant>>,
+    /// When the link was opened; the reference point of the first silence.
+    started_at: Instant,
 }
 
 /// UDP link that answers the app's discovery and receives `MANUAL_CONTROL`.
@@ -164,6 +174,8 @@ impl MavlinkLink {
                 manual_control: Mutex::new(ManualControl::neutral()),
                 peer: Mutex::new(None),
                 last_source: Mutex::new(None),
+                last_peer_seen: Mutex::new(None),
+                started_at: Instant::now(),
             }),
             threads: Mutex::new(Vec::new()),
         })
@@ -259,7 +271,7 @@ fn receive_loop(socket: Arc<UdpSocket>, shared: Arc<Shared>, config: LinkConfig)
         let own_heartbeat = matches!(message, MavMessage::HEARTBEAT(_))
             && (header.system_id, header.component_id) == (config.system_id, config.component_id);
         if !own_heartbeat && let Some(source) = shared.last_source() {
-            shared.observe_peer(source);
+            shared.observe_peer(source, Instant::now());
         }
 
         if let MavMessage::MANUAL_CONTROL(payload) = message {
@@ -284,6 +296,7 @@ fn receive_loop(socket: Arc<UdpSocket>, shared: Arc<Shared>, config: LinkConfig)
 fn heartbeat_loop(socket: Arc<UdpSocket>, shared: Arc<Shared>, config: LinkConfig) {
     let mut frame = Vec::with_capacity(64);
     let mut send_failed = false;
+    let mut next_silence_warning = Instant::now() + APP_SILENCE_WARNING;
     while shared.is_running() {
         let heartbeat = HEARTBEAT_DATA {
             custom_mode: 0,
@@ -327,8 +340,71 @@ fn heartbeat_loop(socket: Arc<UdpSocket>, shared: Arc<Shared>, config: LinkConfi
             }
         }
 
+        warn_if_app_is_silent(&socket, &shared, &config, &mut next_silence_warning);
         shared.sleep_while_running(config.heartbeat_period);
     }
+}
+
+/// Warns when heartbeats go out but nothing comes back from the app.
+///
+/// The app can be silent for reasons this side cannot see: it may not be
+/// running, it may still send to an address it detected earlier, or the network
+/// may drop unicast between clients (a guest Wi-Fi often floods broadcast – which
+/// is why the app still shows a link – but not client-to-client unicast). The
+/// warning names the address the app has to target, so the two sides can be
+/// compared.
+fn warn_if_app_is_silent(
+    socket: &UdpSocket,
+    shared: &Shared,
+    config: &LinkConfig,
+    next_warning: &mut Instant,
+) {
+    let now = Instant::now();
+    let silence = shared.silence(now);
+    if !silence_warning_due(silence, now, next_warning) {
+        return;
+    }
+
+    // The app sends to the address the heartbeat came from, i.e. the source
+    // address of our own heartbeats.
+    let local_port = socket
+        .local_addr()
+        .map_or(config.bind.port(), |address| address.port());
+    let target = match heartbeat_source(local_port, config.app) {
+        Some(local) => format!("point the app at {local}, "),
+        None => String::new(),
+    };
+    eprintln!(
+        "mav_joy: heartbeats are being sent to {}, but nothing has been received from the app for {}s: \
+         {target}the app keeps the address it detected last and the Wi-Fi must not isolate clients \
+         (see README, Troubleshooting)",
+        config.app,
+        silence.as_secs(),
+    );
+}
+
+/// Whether the "app is silent" warning is due; advances [`APP_SILENCE_WARNING_REPEAT`].
+fn silence_warning_due(silence: Duration, now: Instant, next_warning: &mut Instant) -> bool {
+    if silence < APP_SILENCE_WARNING || now < *next_warning {
+        return false;
+    }
+    *next_warning = now + APP_SILENCE_WARNING_REPEAT;
+    true
+}
+
+/// Address the app sees as the source of our heartbeats, i.e. the address it
+/// stores as the drone address. `None` when the routing table cannot tell.
+///
+/// The source address is only picked by the route lookup that `connect`
+/// performs, so a throwaway socket bound to an ephemeral port is used and its
+/// source address is combined with the port the heartbeats really leave from.
+fn heartbeat_source(local_port: u16, app: SocketAddr) -> Option<SocketAddr> {
+    let probe = UdpSocket::bind(("0.0.0.0", 0)).ok()?;
+    // Connecting to a broadcast address needs SO_BROADCAST.
+    probe.set_broadcast(true).ok()?;
+    probe.connect(app).ok()?;
+    let source = probe.local_addr().ok()?.ip();
+    Some(SocketAddr::new(source, local_port))
 }
 
 impl Shared {
@@ -351,12 +427,21 @@ impl Shared {
     }
 
     /// Remembers the address datagrams are coming from.
-    fn observe_peer(&self, peer: SocketAddr) {
+    fn observe_peer(&self, peer: SocketAddr, now: Instant) {
+        *lock(&self.last_peer_seen) = Some(now);
+
         let mut current = lock(&self.peer);
         if *current != Some(peer) {
             eprintln!("mav_joy: MAVLink peer is {peer}");
             *current = Some(peer);
         }
+    }
+
+    /// Time since a message from another MAVLink system was received, or since
+    /// the link was opened if none was received yet.
+    fn silence(&self, now: Instant) -> Duration {
+        let since = lock(&self.last_peer_seen).unwrap_or(self.started_at);
+        now.saturating_duration_since(since)
     }
 
     /// Sleeps `period` in short steps so `stop()` is not delayed.
@@ -598,5 +683,57 @@ mod tests {
         assert_eq!(reading.system_id, 255);
         assert_eq!(reading.component_id, 190);
         assert_eq!(link.peer(), Some(app_address));
+    }
+
+    /// A [`Shared`] whose silence window started at `started_at`.
+    fn shared_state(started_at: Instant) -> Shared {
+        Shared {
+            running: AtomicBool::new(false),
+            sequence: AtomicU8::new(0),
+            manual_control: Mutex::new(ManualControl::neutral()),
+            peer: Mutex::new(None),
+            last_source: Mutex::new(None),
+            last_peer_seen: Mutex::new(None),
+            started_at,
+        }
+    }
+
+    #[test]
+    fn silence_runs_from_the_last_peer_or_from_the_start() {
+        let now = Instant::now();
+        let shared = shared_state(now - Duration::from_secs(30));
+        assert_eq!(shared.silence(now), Duration::from_secs(30));
+
+        let peer = "127.0.0.1:14550".parse().unwrap();
+        shared.observe_peer(peer, now - Duration::from_secs(2));
+        assert_eq!(shared.silence(now), Duration::from_secs(2));
+        assert_eq!(shared.peer(), Some(peer));
+    }
+
+    #[test]
+    fn the_silence_warning_is_rate_limited() {
+        let now = Instant::now();
+        let mut next = now + APP_SILENCE_WARNING;
+
+        // Too early in every respect.
+        assert!(!silence_warning_due(APP_SILENCE_WARNING, now, &mut next));
+        // Silence long enough and the first deadline reached.
+        assert!(silence_warning_due(
+            APP_SILENCE_WARNING,
+            now + APP_SILENCE_WARNING,
+            &mut next
+        ));
+        // The repeat interval has not passed yet.
+        assert!(!silence_warning_due(
+            APP_SILENCE_WARNING,
+            now + APP_SILENCE_WARNING + Duration::from_secs(1),
+            &mut next
+        ));
+        // ... and it is reported again afterwards.
+        assert!(silence_warning_due(
+            APP_SILENCE_WARNING,
+            now + APP_SILENCE_WARNING + APP_SILENCE_WARNING_REPEAT,
+            &mut next
+        ));
     }
 }

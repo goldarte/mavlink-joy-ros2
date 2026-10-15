@@ -42,25 +42,9 @@ cd src/mavlink-joy-ros2 && cargo test && cargo build
 ros2 run mav_joy mav_joy_node
 ```
 
-With parameters:
+`/joy` stays silent until the first `MANUAL_CONTROL` arrives (no invented stick positions).
 
-```bash
-ros2 run mav_joy mav_joy_node --ros-args \
-  -p bind_port:=14550 \
-  -p app_address:=192.168.1.42 -p app_port:=14550
-```
-
-## App settings
-
-The node works with the app defaults; the app only has to be told which network
-to use (it follows the Wi-Fi network it is bound to).
-
-| App setting | Value |
-|---|---|
-| Host / port (manual mode) | IP of the machine running this node, port `14550` |
-| Listen port | `14550` (must match `bind_port`) |
-| Auto-detect | on — the node is discovered from its heartbeats |
-| Drone system id / component id | `1` / `1` (must match `system_id` / `component_id`) |
+After `timeout_sec` without a message the node publishes neutral values (sticks centred, throttle zero) once per tick and logs a warning, so consumers see a failsafe instead of frozen sticks.
 
 ## Parameters
 
@@ -78,11 +62,6 @@ to use (it follows the Wi-Fi network it is bound to).
 | `component_id` | int | `1` | MAVLink component id of this node |
 | `timeout_sec` | double | `1.0` | Link timeout; `0` disables the failsafe |
 
-`/joy` stays silent until the first `MANUAL_CONTROL` arrives (no invented stick
-positions). After `timeout_sec` without a message the node publishes neutral
-values (sticks centred, throttle zero) once per tick and logs a warning, so
-consumers see a failsafe instead of frozen sticks.
-
 ## `/joy` mapping
 
 | `/joy` | `MANUAL_CONTROL` | Range | Meaning |
@@ -93,14 +72,11 @@ consumers see a failsafe instead of frozen sticks.
 | `axes[3]` | `r` | -1..1 | yaw, positive clockwise |
 | `buttons[0..16]` | `buttons` | 0/1 | the 16 bits of the button bitfield |
 
-Values are the raw MAVLink payload divided by 1000; the app's stick curves,
-expo and deadzone are already applied before sending. An axis marked invalid
-(`INT16_MAX`) becomes `0.0`.
+Values are the raw MAVLink payload divided by 1000
 
 ## Test without a phone
 
-`cargo test` covers the protocol mapping and talks to a real UDP socket. For a
-full ROS check, `scripts/fake_app.py` plays the app:
+`cargo test` covers the protocol mapping and talks to a real UDP socket. For a full ROS check, `scripts/fake_app.py` plays the app:
 
 ```bash
 # terminal 1
@@ -113,44 +89,26 @@ ros2 topic echo /joy
 
 ## Troubleshooting
 
-**The node runs (the log shows `MANUAL_CONTROL from system 255 component 190`)
-but `ros2 topic list` has no `/joy` and `ros2 node list` is empty.**
-That is the ROS 2 daemon, not the node: the daemon caches the graph and misses
-participants that appeared after it was started (it also keeps stale discovery
-state after a network change). Check without the daemon and restart it:
+1. **No /joy messages**.
 
-```bash
-ros2 node list --no-daemon        # -> /mav_joy_node
-ros2 topic list --no-daemon       # -> /joy
-ros2 daemon stop                  # the next ros2 command starts a fresh daemon
-```
+    The node runs normally and logs `MANUAL_CONTROL from system 255 component 190` but `ros2 topic list` has no `/joy` and `ros2 node list` is empty.
 
-**The log alternates between two `MAVLink peer is ...` addresses.**
-Until the app is known, heartbeats are sent to a broadcast address and the
-kernel delivers a copy back to this socket, so one of the two addresses is this
-machine's own IP. Such self-echoed heartbeats are recognised and ignored now;
-the remaining address is the app. If both addresses keep changing, two devices
-are talking MAVLink on the same port.
+    The reason is that ROS2 daemon caches the graph and misses participants that appeared after it was started (it also keeps stale discovery state after a network change). Check without the daemon and restart it:
 
-**Nothing arrives from the app.** Check that `bind_port` is the app's listen
-port (14550 by default), that the app's drone system/component id are `1`/`1`
-and that the app is on the same network. On networks that isolate clients
-(visitor Wi-Fi, some hotspots) broadcast may be dropped: set `app_address` to
-the phone's IP and `app_port` to its listen port to talk unicast.
+    ```bash
+    ros2 node list --no-daemon        # -> /mav_joy_node
+    ros2 topic list --no-daemon       # -> /joy
+    ros2 daemon stop                  # the next ros2 command starts a fresh daemon
+    ```
 
-## Notes on the Rust/ROS 2 setup
+2. **The node logs `nothing has been received from the app for 10s`.**
 
-* `rclrs 0.7` is used because it is the release that matches the Rust message
-  crates of `ros-jazzy-rosidl-generator-rs` (both use `rosidl_runtime_rs` 0.6).
-* The message crates are not registered in the ament index
-  (`share/ament_index/resource_index/rust_packages`), so the `[patch.crates-io]`
-  entries in `Cargo.toml` point at `/opt/ros/jazzy/share/<pkg>/rust` explicitly.
-  Adjust the paths if another distribution is used.
-* `build.rs` links empty stubs for `test_msgs`, because rclrs 0.7 asks the
-  linker for every message package it vendors and `test_msgs` is not part of a
-  standard desktop install. Installing `ros-jazzy-test-msgs` removes the need
-  for the stubs.
-* MAVLink over UDP is unauthenticated: anyone who can reach `bind_port` can
-  drive `/joy`. Keep the robot network trusted.
+    `/joy` topic stays empty while the app shows a link.
 
-[mavlink-joystick]: https://github.com/goldarte/mavlink-joystick
+    There are 3 possible reasons for that:
+
+    * **Wrong `bind_port`.** It must be the app's listen port (14550 by default) and the app's drone system/component ids must be `1`/`1`.
+
+    * **The network drops unicast between clients.** Guest and corporate Wi-Fi often floods broadcast (that is why the app still sees the link) but not client-to-client unicast, so the app's `MANUAL_CONTROL` never arrives. If you don't own the router, you can do nothing with this.
+
+    * **The app sends to an address this machine no longer has.** Leave the node off until the app shows `NO LINK` and start it again.
