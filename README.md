@@ -4,7 +4,7 @@ The package with ROS 2 (Humble / Jazzy) node that turns the [mavlink-joystick](h
 
 ```mermaid
 flowchart LR
-    subgraph phone["Phone — mavlink-joystick"]
+    subgraph phone["    Phone — mavlink-joystick    "]
         direction TB
         app["MAVLink GCS<br/><br/>listens on UDP :14550<br/><br/>auto-detect: sys 1 / comp 1"]
     end
@@ -17,8 +17,8 @@ flowchart LR
         node --> joy --> consumer
     end
 
-    app -- "MANUAL_CONTROL — 50 Hz" --> node
-    node -- "HEARTBEAT — 1 Hz" --> app
+    app -- "MANUAL_CONTROL @ 50 Hz" --> node
+    node -- "   HEARTBEAT @ 1 Hz   " --> app
 ```
 
 ## Install required packages
